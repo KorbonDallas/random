@@ -1,0 +1,89 @@
+1. https://neo4j.com/docs/neo4j-graphrag-python/current/user_guide_kg_builder.html#customizing-the-simplekgpipeline
+
+# Defining specific node schemas ahead of time
+
+## Auto-Discovery Behavior by Mode
+
+### `schema="FREE"` (or no schema)
+The pipeline extracts **whatever entities and relationships it finds** in the text — fully unconstrained. The LLM decides everything on its own.
+
+### `schema="EXTRACTED"` (default)
+The pipeline **first runs an automatic schema extraction** pass over the input to infer a schema from the text itself, then uses that inferred schema to guide subsequent extraction. So it auto-discovers a schema, then uses it consistently.
+
+### Manual schema (your own `node_types`, `relationship_types`, `patterns`)
+This is where it gets nuanced — auto-discovery depends on your **strictness flags**:
+
+| Flag | Default | Behavior |
+|---|---|---|
+| `additional_node_types` | `True` | LLM can discover node labels **beyond** your defined ones |
+| `additional_relationship_types` | `True` | LLM can discover relationship types **beyond** your defined ones |
+| `additional_patterns` | `True` | LLM can discover connection patterns **beyond** your defined ones |
+
+So even when you supply a manual schema, the LLM will **still auto-discover additional entities and relationships by default** unless you explicitly set those flags to `False`.
+
+---
+
+## The Key Takeaway
+
+- Your manual schema acts as **suggestions/hints** to the LLM, not hard constraints — by default.
+- Setting all three `additional_*` flags to `False` is what makes it truly strict, extracting **only** what matches your defined schema.
+- If you want a hybrid — lock down node types but allow free relationship discovery — you can mix and match the flags independently.
+
+# Specifying node entity resolution
+
+## Entity Resolution in `SimpleKGPipeline`
+
+### It's on by default
+
+After each run, an Entity Resolution step is performed by default to merge nodes that share the same label and `name` property. You don't have to do anything to enable it. To turn it off:
+
+```python
+kg_builder = SimpleKGPipeline(
+    # ...
+    perform_entity_resolution=False,
+)
+```
+
+---
+
+### Three Resolution Strategies
+
+The package implements three resolvers: a simple resolver that merges nodes with the same label and identical `name` property; and two similarity-based resolvers that merge nodes with the same label and similar textual properties.
+
+The three options are:
+
+**1. `SinglePropertyExactMatchResolver`** — the default used by `SimpleKGPipeline`. Merges nodes with identical label + `name`.
+
+**2. `SpaCySemanticMatchResolver`** — uses spaCy embeddings and cosine similarity. Ideal for higher-quality KG resolution using static embeddings.
+
+**3. `FuzzyMatchResolver`** — uses RapidFuzz (Levenshtein Distance). Offers faster ingestion speeds using string similarity measures, at the potential cost of resolution precision.
+
+The similarity-based resolvers must be used via the lower-level component API rather than the `SimpleKGPipeline` parameter directly:
+
+```python
+from neo4j_graphrag.experimental.components.resolver import (
+    SpaCySemanticMatchResolver,
+    FuzzyMatchResolver,
+)
+resolver = SpaCySemanticMatchResolver(driver)
+await resolver.run()
+```
+
+---
+
+### Important Caveat
+
+The `SinglePropertyExactMatchResolver`, `SpaCySemanticMatchResolver`, and `FuzzyMatchResolver` **replace** the nodes created by the KG writer — they don't just add links, they actually merge the duplicate nodes in Neo4j.
+
+Also, by default, all nodes with the `__Entity__` label will be resolved, but you can scope this down with a `filter_query` parameter if you want to exclude already-resolved nodes or entities from previous pipeline runs.
+
+---
+
+### Summary
+
+| Need | Approach |
+|---|---|
+| Basic deduplication | Default (`perform_entity_resolution=True`) |
+| Smarter name matching (typos, variants) | `FuzzyMatchResolver` |
+| Semantic similarity matching | `SpaCySemanticMatchResolver` |
+| Skip resolution entirely | `perform_entity_resolution=False` |
